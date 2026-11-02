@@ -1,0 +1,678 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="暗転カメラ">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>暗転カメラ</title>
+<style>
+/* 黒一色の撮影アプリ。カメラ映像が主役で、操作部は半透明の層に置く */
+:root {
+  color-scheme: dark;
+  --bg: #000;
+  --surface: #17171a;
+  --surface-2: #232328;
+  --line: #34343a;
+  --fg: #f2f0ea;
+  --muted: #9a98a0;
+  --rec: #ff3b30;
+  --back: #6cb6ff;
+  --front: #ffb454;
+  --glass: rgba(20, 20, 24, .55);
+  --font: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 var(--font); overflow: hidden; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+[hidden] { display: none !important; }
+.screen { position: fixed; inset: 0; }
+
+/* ---------- 起動画面 ---------- */
+#start { display: flex; flex-direction: column; justify-content: center; gap: 20px;
+  padding: calc(var(--safe-t) + 24px) max(24px, env(safe-area-inset-right)) calc(var(--safe-b) + 24px) max(24px, env(safe-area-inset-left));
+  max-width: 520px; margin: 0 auto; overflow-y: auto; }
+#start h1 { font-size: 30px; line-height: 1.2; margin: 0; letter-spacing: .02em; }
+#start p { margin: 0; color: var(--muted); }
+#start ul { margin: 0; padding-left: 1.2em; color: var(--muted); display: grid; gap: 4px; }
+#start ul b { color: var(--fg); font-weight: 600; }
+.primary { background: var(--fg); color: #000; font-weight: 700; border-radius: 14px; padding: 15px 20px; font-size: 17px; }
+.note { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; font-size: 13px; color: var(--muted); }
+.note b { color: var(--fg); }
+#startError { color: #ff8a80; }
+
+/* ---------- 撮影画面 ---------- */
+#preview { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
+#preview.mirror { transform: scaleX(-1); }
+.topbar { position: absolute; left: 0; right: 0; top: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: calc(var(--safe-t) + 10px) 14px 10px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; background: var(--glass); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border-radius: 999px; padding: 6px 12px; font-size: 14px; font-weight: 600; }
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; }
+#timer { background: var(--rec); font-variant-numeric: tabular-nums; }
+.iconbtn { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 50%; background: var(--glass); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.iconbtn svg { width: 22px; height: 22px; }
+.bottombar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; align-items: center; gap: 18px;
+  padding: 0 28px calc(var(--safe-b) + 22px); }
+#darkBtn { display: inline-flex; align-items: center; gap: 8px; background: var(--glass); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border-radius: 999px; padding: 11px 20px; font-weight: 700; font-size: 16px; }
+#darkBtn svg { width: 18px; height: 18px; }
+.controls { width: 100%; max-width: 380px; display: flex; align-items: center; justify-content: space-between; }
+.roundbtn { position: relative; width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; background: var(--glass); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.roundbtn svg { width: 26px; height: 26px; }
+.roundbtn:disabled { opacity: .35; }
+.badge { position: absolute; top: -4px; right: -4px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--rec); font-size: 12px; font-weight: 700; display: grid; place-items: center; }
+#recBtn { width: 80px; height: 80px; border-radius: 50%; border: 5px solid #fff; display: grid; place-items: center; }
+#recBtn span { width: 62px; height: 62px; border-radius: 31px; background: var(--rec); transition: all .2s ease; }
+#recBtn.on span { width: 30px; height: 30px; border-radius: 7px; }
+
+/* ---------- 暗転 ---------- */
+#dark { position: fixed; inset: 0; background: #000; z-index: 50; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+#darkTimer { position: absolute; top: calc(var(--safe-t) + 8px); left: 0; right: 0; text-align: center; color: rgba(255, 59, 48, .32); font-size: 12px; font-variant-numeric: tabular-nums; }
+#darkHint { position: absolute; bottom: calc(var(--safe-b) + 48px); left: 16px; right: 16px; text-align: center; color: rgba(255, 255, 255, .38); font-size: 13px; transition: opacity 1.2s; }
+#darkHint.fade { opacity: 0; }
+
+/* ---------- シート（一覧・設定・再生） ---------- */
+.sheet { position: fixed; inset: 0; z-index: 30; background: var(--bg); display: flex; flex-direction: column; }
+.sheethead { display: grid; grid-template-columns: 80px 1fr 80px; align-items: center; padding: calc(var(--safe-t) + 8px) 12px 8px; border-bottom: 1px solid var(--line); }
+.sheethead h2 { margin: 0; font-size: 17px; text-align: center; }
+.textbtn { color: var(--back); font-size: 16px; padding: 8px 4px; text-align: left; }
+.textbtn.right { text-align: right; }
+.segment { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; margin: 10px 14px; padding: 2px; background: var(--surface-2); border-radius: 10px; }
+.segment button { padding: 7px 4px; border-radius: 8px; font-size: 14px; color: var(--muted); }
+.segment button[aria-pressed="true"] { background: #4a4a52; color: var(--fg); font-weight: 600; }
+.scroll { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: calc(var(--safe-b) + 16px); }
+#list { list-style: none; margin: 0; padding: 0; }
+#list li button { width: 100%; display: flex; gap: 12px; align-items: center; padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--surface-2); }
+.thumb { width: 72px; height: 72px; flex: none; border-radius: 8px; background: var(--surface-2) center / cover no-repeat; }
+.rowtext { min-width: 0; display: grid; gap: 2px; }
+.rowtext .date { font-weight: 600; font-size: 15px; }
+.cam { font-size: 12px; font-weight: 600; }
+.cam.back { color: var(--back); }
+.cam.front { color: var(--front); }
+.meta { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.empty { text-align: center; color: var(--muted); padding: 60px 24px; }
+.settings { padding: 10px 14px; display: grid; gap: 10px; }
+.setrow { display: flex; align-items: center; justify-content: space-between; gap: 16px; background: var(--surface); border-radius: 12px; padding: 12px 14px; }
+.setrow small { display: block; color: var(--muted); font-size: 12px; }
+.setrow input { width: 22px; height: 22px; flex: none; accent-color: #34c759; }
+#player { z-index: 40; }
+#playerVideo { width: 100%; flex: 1; min-height: 0; background: #000; }
+.playerbar { display: flex; gap: 10px; padding: 12px 14px calc(var(--safe-b) + 12px); border-top: 1px solid var(--line); }
+.playerbar button { flex: 1; padding: 12px; border-radius: 12px; background: var(--surface-2); font-weight: 600; }
+.playerbar .danger { color: #ff6b61; }
+.playerbar .dangerfill { background: var(--rec); color: #fff; }
+#toast { position: fixed; left: 50%; bottom: calc(var(--safe-b) + 150px); transform: translateX(-50%); z-index: 60; background: rgba(40, 40, 46, .95);
+  padding: 10px 16px; border-radius: 12px; font-size: 14px; max-width: calc(100% - 32px); text-align: center; pointer-events: none; transition: opacity .3s; }
+#haptic { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; overflow: hidden; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<!-- 起動画面 -->
+<section id="start" class="screen">
+  <h1>暗転カメラ</h1>
+  <p>動画を撮りながら、画面は真っ黒にできるカメラです。</p>
+  <ul>
+    <li><b>暗転中に2回タップ</b>：撮影を開始 / 停止</li>
+    <li><b>暗転中に長押し</b>：画面を元に戻す</li>
+    <li>前のカメラ・後ろのカメラを切り替えて撮れます</li>
+    <li>撮った動画はアプリ内の一覧で見られます</li>
+  </ul>
+  <button id="startBtn" class="primary">カメラを起動</button>
+  <p id="startError" hidden></p>
+  <div id="homeNote" class="note" hidden>
+    <b>おすすめ：</b>Safari の下にある共有ボタン（□に↑）→「<b>ホーム画面に追加</b>」をすると、アプリのように全画面で使えます。
+  </div>
+  <div class="note">
+    撮影中は画面を消したり、他のアプリに切り替えたりしないでください。iPhone の仕様で撮影が止まります（それまでの分は保存されます）。
+  </div>
+</section>
+
+<!-- 撮影画面 -->
+<section id="camera" class="screen" hidden>
+  <video id="preview" playsinline muted autoplay></video>
+  <div class="topbar">
+    <span id="camLabel" class="chip"><span class="dot"></span><span>後ろのカメラ</span></span>
+    <span id="timer" class="chip" hidden>● 0:00</span>
+    <button id="settingsBtn" class="iconbtn" aria-label="設定">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+    </button>
+  </div>
+  <div class="bottombar">
+    <button id="darkBtn">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <span>暗転して撮影</span>
+    </button>
+    <div class="controls">
+      <button id="libraryBtn" class="roundbtn" aria-label="撮った動画">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.5v5l4-2.5z" fill="currentColor"/></svg>
+        <span id="countBadge" class="badge" hidden>0</span>
+      </button>
+      <button id="recBtn" aria-label="撮影を開始"><span></span></button>
+      <button id="switchBtn" class="roundbtn" aria-label="カメラを切り替え">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-3l-2-3H9L7 7H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1z"/><path d="M15.5 12.5a3.5 3.5 0 0 0-6-2.4M8.5 13.5a3.5 3.5 0 0 0 6 2.4"/><path d="M9 8v2.3h2.3M15 18v-2.3h-2.3"/></svg>
+      </button>
+    </div>
+  </div>
+</section>
+
+<!-- 暗転 -->
+<div id="dark" hidden>
+  <div id="darkTimer" hidden></div>
+  <div id="darkHint">2回タップ：撮影 開始 / 停止<br>長押し：元に戻す</div>
+</div>
+
+<!-- 一覧 -->
+<section id="library" class="sheet" hidden>
+  <div class="sheethead">
+    <span></span>
+    <h2>撮った動画</h2>
+    <button id="libraryClose" class="textbtn right">閉じる</button>
+  </div>
+  <div class="segment" role="group" aria-label="カメラで絞り込み">
+    <button data-filter="all" aria-pressed="true">すべて</button>
+    <button data-filter="back" aria-pressed="false">後ろのカメラ</button>
+    <button data-filter="front" aria-pressed="false">前のカメラ</button>
+  </div>
+  <div class="scroll"><ul id="list"></ul><p id="empty" class="empty" hidden>まだ動画がありません</p></div>
+</section>
+
+<!-- 再生 -->
+<section id="player" class="sheet" hidden>
+  <div class="sheethead">
+    <button id="playerBack" class="textbtn">‹ 一覧</button>
+    <h2 id="playerTitle">動画</h2>
+    <span></span>
+  </div>
+  <video id="playerVideo" controls playsinline></video>
+  <div class="playerbar" id="playerActions">
+    <button id="shareBtn">保存・共有</button>
+    <button id="deleteBtn" class="danger">削除</button>
+  </div>
+  <div class="playerbar" id="confirmActions" hidden>
+    <button id="cancelDelete">やめる</button>
+    <button id="confirmDelete" class="dangerfill">本当に削除</button>
+  </div>
+</section>
+
+<!-- 設定 -->
+<section id="settings" class="sheet" hidden>
+  <div class="sheethead">
+    <span></span>
+    <h2>設定</h2>
+    <button id="settingsClose" class="textbtn right">閉じる</button>
+  </div>
+  <div class="scroll settings">
+    <label class="setrow" for="setRecordOnDark"><span>暗転と同時に撮影を始める</span><input type="checkbox" id="setRecordOnDark"></label>
+    <label class="setrow" for="setDarkTimer"><span>暗転中に撮影時間を小さく表示<small>画面の上にうっすら赤く表示されます</small></span><input type="checkbox" id="setDarkTimer"></label>
+    <label class="setrow" for="setAudio"><span>音声も録音する<small>変更はカメラの再起動後に反映されます</small></span><input type="checkbox" id="setAudio"></label>
+    <div class="note">
+      <b>画面がロックされる場合：</b>iPhone の「設定」→「画面表示と明るさ」→「自動ロック」を「なし」にしてください。<br><br>
+      <b>さらに暗くしたい場合：</b>コントロールセンターで画面の明るさを一番下まで下げてください（Webアプリからは明るさを変えられません）。
+    </div>
+  </div>
+</section>
+
+<div id="toast" hidden></div>
+<label id="haptic" aria-hidden="true"><input type="checkbox" switch tabindex="-1"></label>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (s) => document.querySelector(s);
+
+  // ---------- 設定（この端末にだけ保存） ----------
+  const settings = { recordOnDark: true, darkTimer: false, audio: true };
+  try { Object.assign(settings, JSON.parse(localStorage.getItem('darkcam.settings') || '{}')); } catch {}
+  const saveSettings = () => { try { localStorage.setItem('darkcam.settings', JSON.stringify(settings)); } catch {} };
+
+  const CAMERA = {
+    back: { label: '後ろのカメラ', facing: 'environment', color: 'var(--back)' },
+    front: { label: '前のカメラ', facing: 'user', color: 'var(--front)' },
+  };
+
+  const state = {
+    camera: 'back', stream: null, recorder: null, recording: false, startedAt: 0,
+    dark: false, wakeLock: null, filter: 'all', items: [], current: null, playerUrl: null,
+  };
+
+  // ---------- 保存（IndexedDB） ----------
+  const db = {
+    _p: null,
+    open() {
+      if (!this._p) this._p = new Promise((resolve, reject) => {
+        const req = indexedDB.open('darkcam', 1);
+        req.onupgradeneeded = () => {
+          req.result.createObjectStore('meta', { keyPath: 'id' });
+          req.result.createObjectStore('blobs');
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      return this._p;
+    },
+    async tx(stores, mode, fn) {
+      const d = await this.open();
+      return new Promise((resolve, reject) => {
+        const t = d.transaction(stores, mode);
+        let result;
+        Promise.resolve(fn(t)).then((r) => { result = r; });
+        t.oncomplete = () => resolve(result);
+        t.onerror = () => reject(t.error);
+        t.onabort = () => reject(t.error);
+      });
+    },
+    add(meta, blob) {
+      return this.tx(['meta', 'blobs'], 'readwrite', (t) => {
+        t.objectStore('meta').put(meta);
+        t.objectStore('blobs').put(blob, meta.id);
+      });
+    },
+    all() {
+      return this.tx(['meta'], 'readonly', (t) => new Promise((res) => {
+        const r = t.objectStore('meta').getAll();
+        r.onsuccess = () => res(r.result);
+      }));
+    },
+    blob(id) {
+      return this.tx(['blobs'], 'readonly', (t) => new Promise((res) => {
+        const r = t.objectStore('blobs').get(id);
+        r.onsuccess = () => res(r.result);
+      }));
+    },
+    remove(id) {
+      return this.tx(['meta', 'blobs'], 'readwrite', (t) => {
+        t.objectStore('meta').delete(id);
+        t.objectStore('blobs').delete(id);
+      });
+    },
+  };
+
+  // ---------- 便利関数 ----------
+  const fmtTime = (sec) => {
+    sec = Math.max(0, Math.floor(sec));
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+  };
+  const fmtSize = (b) => b >= 1e9 ? (b / 1e9).toFixed(2) + ' GB' : b >= 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1e3)) + ' KB';
+  const fmtDate = (t) => new Intl.DateTimeFormat('ja-JP', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(t);
+  const pad = (n) => String(n).padStart(2, '0');
+
+  let toastTimer;
+  function toast(msg, ms = 2500) {
+    const el = $('#toast');
+    el.textContent = msg; el.hidden = false; el.style.opacity = '1';
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.style.opacity = '0'; setTimeout(() => { el.hidden = true; }, 300); }, ms);
+  }
+
+  // 画面が暗くても分かるように振動で知らせる（iPhone は Safari 18 以降で対応）
+  function haptic(times) {
+    if (navigator.vibrate) { navigator.vibrate(times === 1 ? 80 : [60, 90, 60]); return; }
+    for (let i = 0; i < times; i++) setTimeout(() => $('#haptic').click(), i * 160);
+  }
+
+  // 画面が自動で消えないようにする
+  async function updateWakeLock() {
+    const want = state.dark || state.recording;
+    try {
+      if (want && !state.wakeLock && 'wakeLock' in navigator && document.visibilityState === 'visible') {
+        state.wakeLock = await navigator.wakeLock.request('screen');
+        state.wakeLock.addEventListener('release', () => { state.wakeLock = null; });
+      } else if (!want && state.wakeLock) {
+        await state.wakeLock.release();
+        state.wakeLock = null;
+      }
+    } catch {}
+  }
+
+  // ---------- カメラ ----------
+  async function openCamera() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('このブラウザではカメラを使えません。iPhone の Safari で開いてください。');
+    }
+    stopStream();
+    const video = { facingMode: { ideal: CAMERA[state.camera].facing }, width: { ideal: 1920 }, height: { ideal: 1080 } };
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video, audio: settings.audio });
+    } catch (e) {
+      if (e.name === 'NotAllowedError' && settings.audio) {
+        // マイクだけ拒否された場合は映像のみで続ける
+        stream = await navigator.mediaDevices.getUserMedia({ video, audio: false }).catch(() => { throw e; });
+        toast('マイクが使えないため、音声なしで撮影します');
+      } else throw e;
+    }
+    state.stream = stream;
+    const v = $('#preview');
+    v.srcObject = stream;
+    v.classList.toggle('mirror', state.camera === 'front');
+    await v.play().catch(() => {});
+    renderCamera();
+  }
+
+  function stopStream() {
+    state.stream?.getTracks().forEach((t) => t.stop());
+    state.stream = null;
+  }
+
+  function cameraErrorText(e) {
+    if (e?.name === 'NotAllowedError') return 'カメラの使用が許可されていません。iPhone の「設定」→「アプリ」→「Safari」→「カメラ」を「許可」にしてから、もう一度お試しください。';
+    if (e?.name === 'NotFoundError') return 'カメラが見つかりませんでした。';
+    if (e?.name === 'NotReadableError') return 'カメラを使えませんでした。ほかのアプリでカメラを使っていないか確認してください。';
+    return e?.message || 'カメラを起動できませんでした。';
+  }
+
+  async function switchCamera() {
+    if (state.recording) return;
+    const prev = state.camera;
+    state.camera = prev === 'back' ? 'front' : 'back';
+    $('#switchBtn').disabled = true;
+    try { await openCamera(); }
+    catch (e) { state.camera = prev; toast(cameraErrorText(e), 4000); openCamera().catch(() => {}); }
+    finally { $('#switchBtn').disabled = false; }
+  }
+
+  // ---------- 撮影 ----------
+  function pickMime() {
+    if (!window.MediaRecorder?.isTypeSupported) return '';
+    return ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm'].find((t) => MediaRecorder.isTypeSupported(t)) || '';
+  }
+
+  function startRecording() {
+    if (state.recording || !state.stream) return;
+    if (!window.MediaRecorder) { toast('このブラウザでは撮影できません。Safari を最新にしてください。', 4000); return; }
+    const mime = pickMime();
+    let rec;
+    try { rec = new MediaRecorder(state.stream, mime ? { mimeType: mime, videoBitsPerSecond: 8_000_000 } : undefined); }
+    catch (e) { toast('撮影を始められませんでした', 3000); return; }
+    const chunks = [];
+    const camera = state.camera;
+    const startedAt = Date.now();
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = () => saveRecording(chunks, rec.mimeType || mime || 'video/mp4', camera, startedAt, Date.now());
+    rec.start(1000);
+    state.recorder = rec;
+    state.recording = true;
+    state.startedAt = startedAt;
+    haptic(1);
+    renderCamera();
+    updateWakeLock();
+  }
+
+  function stopRecording() {
+    if (!state.recording) return;
+    state.recording = false;
+    try { state.recorder.stop(); } catch {}
+    state.recorder = null;
+    haptic(2);
+    renderCamera();
+    updateWakeLock();
+  }
+
+  const toggleRecording = () => (state.recording ? stopRecording() : startRecording());
+
+  async function saveRecording(chunks, mime, camera, startedAt, endedAt) {
+    const type = mime.split(';')[0];
+    const blob = new Blob(chunks, { type });
+    if (!blob.size) { toast('撮影データが空でした'); return; }
+    const thumb = await makeThumb(blob);
+    const d = new Date(startedAt);
+    const ext = type.includes('webm') ? 'webm' : 'mp4';
+    const meta = {
+      id: `${startedAt}`,
+      name: `darkcam_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}_${camera}.${ext}`,
+      date: startedAt, camera, type, size: blob.size,
+      duration: (endedAt - startedAt) / 1000, thumb,
+    };
+    try {
+      await db.add(meta, blob);
+      await loadItems();
+      if (!state.dark) toast('保存しました');
+    } catch (e) {
+      toast('保存に失敗しました（空き容量が足りない可能性があります）', 4000);
+    }
+  }
+
+  function makeThumb(blob) {
+    return new Promise((resolve) => {
+      const v = document.createElement('video');
+      const url = URL.createObjectURL(blob);
+      let done = false;
+      const finish = (data) => { if (done) return; done = true; URL.revokeObjectURL(url); v.removeAttribute('src'); v.load(); resolve(data); };
+      const draw = () => {
+        try {
+          const w = v.videoWidth, h = v.videoHeight;
+          if (!w || !h) return finish(null);
+          const s = 240 / Math.max(w, h);
+          const c = document.createElement('canvas');
+          c.width = Math.round(w * s); c.height = Math.round(h * s);
+          c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+          finish(c.toDataURL('image/jpeg', 0.7));
+        } catch { finish(null); }
+      };
+      v.muted = true; v.playsInline = true; v.preload = 'auto';
+      v.onloadeddata = () => { try { v.currentTime = 0.1; } catch { draw(); } };
+      v.onseeked = draw;
+      v.onerror = () => finish(null);
+      setTimeout(() => finish(null), 6000);
+      v.src = url;
+      v.load();
+    });
+  }
+
+  // ---------- 暗転 ----------
+  let hintTimer;
+  function enterDark() {
+    state.dark = true;
+    $('#dark').hidden = false;
+    const hint = $('#darkHint');
+    hint.classList.remove('fade');
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => hint.classList.add('fade'), 3000);
+    if (settings.recordOnDark && !state.recording) startRecording();
+    renderDarkTimer();
+    updateWakeLock();
+  }
+
+  function exitDark() {
+    state.dark = false;
+    $('#dark').hidden = true;
+    renderCamera();
+    updateWakeLock();
+  }
+
+  // 2回タップ = 撮影の開始/停止、長押し = 暗転解除
+  (() => {
+    const el = $('#dark');
+    let lastTap = 0, pressTimer = null, longPressed = false, startX = 0, startY = 0;
+    el.addEventListener('pointerdown', (e) => {
+      longPressed = false; startX = e.clientX; startY = e.clientY;
+      clearTimeout(pressTimer);
+      pressTimer = setTimeout(() => { longPressed = true; lastTap = 0; haptic(1); exitDark(); }, 1000);
+    });
+    el.addEventListener('pointermove', (e) => {
+      if (Math.hypot(e.clientX - startX, e.clientY - startY) > 20) clearTimeout(pressTimer);
+    });
+    el.addEventListener('pointercancel', () => clearTimeout(pressTimer));
+    el.addEventListener('pointerup', () => {
+      clearTimeout(pressTimer);
+      if (longPressed) return;
+      const now = Date.now();
+      if (now - lastTap < 400) { lastTap = 0; toggleRecording(); }
+      else lastTap = now;
+    });
+    el.addEventListener('contextmenu', (e) => e.preventDefault());
+  })();
+
+  // ---------- 表示更新 ----------
+  function renderCamera() {
+    const cam = CAMERA[state.camera];
+    const label = $('#camLabel');
+    label.querySelector('span:last-child').textContent = cam.label;
+    label.querySelector('.dot').style.background = cam.color;
+    $('#recBtn').classList.toggle('on', state.recording);
+    $('#recBtn').setAttribute('aria-label', state.recording ? '撮影を停止' : '撮影を開始');
+    $('#switchBtn').disabled = state.recording;
+    $('#timer').hidden = !state.recording;
+    $('#darkBtn span').textContent = settings.recordOnDark && !state.recording ? '暗転して撮影' : '画面を暗転';
+    renderTimers();
+  }
+
+  function renderTimers() {
+    if (state.recording) $('#timer').textContent = '● ' + fmtTime((Date.now() - state.startedAt) / 1000);
+    renderDarkTimer();
+  }
+
+  function renderDarkTimer() {
+    const t = $('#darkTimer');
+    t.hidden = !(state.dark && settings.darkTimer && state.recording);
+    if (!t.hidden) t.textContent = fmtTime((Date.now() - state.startedAt) / 1000);
+  }
+  setInterval(renderTimers, 500);
+
+  // ---------- 一覧 ----------
+  async function loadItems() {
+    try { state.items = (await db.all()).sort((a, b) => b.date - a.date); }
+    catch { state.items = []; }
+    const badge = $('#countBadge');
+    badge.hidden = !state.items.length;
+    badge.textContent = state.items.length > 99 ? '99+' : state.items.length;
+    if (!$('#library').hidden) renderList();
+  }
+
+  function renderList() {
+    const items = state.items.filter((i) => state.filter === 'all' || i.camera === state.filter);
+    const list = $('#list');
+    list.textContent = '';
+    for (const item of items) {
+      const li = document.createElement('li');
+      const btn = document.createElement('button');
+      const thumb = document.createElement('span');
+      thumb.className = 'thumb';
+      if (item.thumb) thumb.style.backgroundImage = `url("${item.thumb}")`;
+      const text = document.createElement('span');
+      text.className = 'rowtext';
+      const date = document.createElement('span'); date.className = 'date'; date.textContent = fmtDate(item.date);
+      const cam = document.createElement('span'); cam.className = 'cam ' + item.camera; cam.textContent = CAMERA[item.camera]?.label || '不明';
+      const meta = document.createElement('span'); meta.className = 'meta'; meta.textContent = `${fmtTime(item.duration)} ・ ${fmtSize(item.size)}`;
+      text.append(date, cam, meta);
+      btn.append(thumb, text);
+      btn.addEventListener('click', () => openPlayer(item));
+      li.append(btn);
+      list.append(li);
+    }
+    $('#empty').hidden = items.length > 0;
+    $('#empty').textContent = state.items.length ? 'このカメラで撮った動画はありません' : 'まだ動画がありません';
+    document.querySelectorAll('.segment button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.filter === state.filter)));
+  }
+
+  // ---------- 再生 ----------
+  async function openPlayer(item) {
+    const blob = await db.blob(item.id).catch(() => null);
+    if (!blob) { toast('動画を読み込めませんでした'); return; }
+    state.current = { item, blob };
+    if (state.playerUrl) URL.revokeObjectURL(state.playerUrl);
+    state.playerUrl = URL.createObjectURL(blob);
+    $('#playerTitle').textContent = CAMERA[item.camera]?.label || '動画';
+    $('#playerActions').hidden = false;
+    $('#confirmActions').hidden = true;
+    $('#player').hidden = false;
+    const v = $('#playerVideo');
+    v.src = state.playerUrl;
+    v.play().catch(() => {});
+  }
+
+  function closePlayer() {
+    const v = $('#playerVideo');
+    v.pause(); v.removeAttribute('src'); v.load();
+    if (state.playerUrl) URL.revokeObjectURL(state.playerUrl);
+    state.playerUrl = null; state.current = null;
+    $('#player').hidden = true;
+  }
+
+  async function shareCurrent() {
+    const { item, blob } = state.current || {};
+    if (!blob) return;
+    const file = new File([blob], item.name, { type: item.type });
+    if (navigator.canShare?.({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); } catch {}
+      return;
+    }
+    // 共有が使えない場合はファイルとしてダウンロード
+    const a = document.createElement('a');
+    a.href = state.playerUrl; a.download = item.name;
+    document.body.append(a); a.click(); a.remove();
+  }
+
+  // ---------- 画面の出し入れ ----------
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'hidden') {
+      // ロックやアプリ切替で撮影は続けられないため、そこまでを保存する
+      if (state.recording) stopRecording();
+    } else {
+      updateWakeLock();
+      if (!$('#camera').hidden) {
+        const live = state.stream?.getVideoTracks().some((t) => t.readyState === 'live');
+        if (!live) openCamera().catch((e) => toast(cameraErrorText(e), 4000));
+      }
+    }
+  });
+
+  // ---------- ボタン ----------
+  $('#startBtn').addEventListener('click', async () => {
+    const btn = $('#startBtn'), err = $('#startError');
+    btn.disabled = true; btn.textContent = '起動中…'; err.hidden = true;
+    try {
+      await openCamera();
+      $('#start').hidden = true;
+      $('#camera').hidden = false;
+      navigator.storage?.persist?.().catch(() => {});
+    } catch (e) {
+      err.textContent = cameraErrorText(e); err.hidden = false;
+    } finally {
+      btn.disabled = false; btn.textContent = 'カメラを起動';
+    }
+  });
+  $('#recBtn').addEventListener('click', toggleRecording);
+  $('#darkBtn').addEventListener('click', enterDark);
+  $('#switchBtn').addEventListener('click', switchCamera);
+  $('#libraryBtn').addEventListener('click', () => { $('#library').hidden = false; renderList(); });
+  $('#libraryClose').addEventListener('click', () => { $('#library').hidden = true; });
+  document.querySelectorAll('.segment button').forEach((b) => b.addEventListener('click', () => { state.filter = b.dataset.filter; renderList(); }));
+  $('#playerBack').addEventListener('click', closePlayer);
+  $('#shareBtn').addEventListener('click', shareCurrent);
+  $('#deleteBtn').addEventListener('click', () => { $('#playerActions').hidden = true; $('#confirmActions').hidden = false; });
+  $('#cancelDelete').addEventListener('click', () => { $('#playerActions').hidden = false; $('#confirmActions').hidden = true; });
+  $('#confirmDelete').addEventListener('click', async () => {
+    const id = state.current?.item.id;
+    closePlayer();
+    if (id) { await db.remove(id).catch(() => {}); await loadItems(); toast('削除しました'); }
+  });
+  $('#settingsBtn').addEventListener('click', () => { $('#settings').hidden = false; });
+  $('#settingsClose').addEventListener('click', () => { $('#settings').hidden = true; renderCamera(); });
+  for (const [id, key] of [['#setRecordOnDark', 'recordOnDark'], ['#setDarkTimer', 'darkTimer'], ['#setAudio', 'audio']]) {
+    const input = $(id);
+    input.checked = !!settings[key];
+    input.addEventListener('change', () => { settings[key] = input.checked; saveSettings(); });
+  }
+
+  // ホーム画面から開いていなければ追加方法を案内
+  const standalone = window.navigator.standalone || matchMedia('(display-mode: standalone)').matches;
+  $('#homeNote').hidden = !!standalone;
+
+  loadItems();
+})();
+</script>
+</body>
+</html>
