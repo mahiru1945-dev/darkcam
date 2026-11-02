@@ -51,7 +51,15 @@ button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
 
 /* ---------- 撮影画面 ---------- */
 #preview { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
-#preview.mirror { transform: scaleX(-1); }
+#preview.mirror, #nightCanvas.mirror { transform: scaleX(-1); }
+#nightCanvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
+.moderow { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.modebtn { display: inline-flex; align-items: center; gap: 6px; background: var(--glass); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border-radius: 999px; padding: 8px 14px; font-size: 14px; font-weight: 600; }
+.modebtn svg { width: 16px; height: 16px; }
+.modebtn.active { background: rgba(120, 220, 120, .28); color: #b9ffb0; }
+.modebtn.torch.active { background: rgba(255, 214, 10, .3); color: #ffe680; }
+.modebtn:disabled { opacity: .4; }
 .topbar { position: absolute; left: 0; right: 0; top: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: calc(var(--safe-t) + 10px) 14px 10px; }
 .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--glass); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
@@ -141,6 +149,7 @@ button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
 <!-- 撮影画面 -->
 <section id="camera" class="screen" hidden>
   <video id="preview" playsinline muted autoplay></video>
+  <canvas id="nightCanvas" hidden></canvas>
   <div class="topbar">
     <span id="camLabel" class="chip"><span class="dot"></span><span>後ろのカメラ</span></span>
     <span id="timer" class="chip" hidden>● 0:00</span>
@@ -149,6 +158,16 @@ button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
     </button>
   </div>
   <div class="bottombar">
+    <div class="moderow">
+      <button id="nightBtn" class="modebtn" aria-label="暗視モードを切り替え">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/></svg>
+        <span>暗視：オフ</span>
+      </button>
+      <button id="torchBtn" class="modebtn torch" hidden aria-label="ライトを切り替え">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M8 2h8v4l-2 4v12h-4V10L8 6z"/><path d="M12 14v2"/></svg>
+        <span>ライト</span>
+      </button>
+    </div>
     <button id="darkBtn">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
       <span>暗転して撮影</span>
@@ -232,8 +251,9 @@ button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
   const $ = (s) => document.querySelector(s);
 
   // ---------- 設定（この端末にだけ保存） ----------
-  const settings = { recordOnDark: true, darkTimer: false, audio: true };
+  const settings = { recordOnDark: true, darkTimer: false, audio: true, night: 'off' };
   try { Object.assign(settings, JSON.parse(localStorage.getItem('darkcam.settings') || '{}')); } catch {}
+  if (!['off', 'bright', 'green'].includes(settings.night)) settings.night = 'off';
   const saveSettings = () => { try { localStorage.setItem('darkcam.settings', JSON.stringify(settings)); } catch {} };
 
   const CAMERA = {
@@ -243,7 +263,7 @@ button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
 
   const state = {
     camera: 'back', stream: null, recorder: null, recording: false, startedAt: 0,
-    dark: false, wakeLock: null, filter: 'all', items: [], current: null, playerUrl: null,
+    dark: false, wakeLock: null, torch: false, filter: 'all', items: [], current: null, playerUrl: null,
   };
 
   // ---------- 保存（IndexedDB） ----------
@@ -336,6 +356,122 @@ button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
     } catch {}
   }
 
+  // ---------- 暗視（映像を明るく加工する） ----------
+  // 本物の赤外線ではなく、カメラ映像を明るくし、前のフレームと重ねてざらつきを減らす
+  const NIGHT_MODES = {
+    off:    { label: '暗視：オフ' },
+    bright: { label: '暗視：明るく', gain: 1.9, gamma: 0.55, green: 0.0, alpha: 0.5 },
+    green:  { label: '暗視：緑', gain: 2.3, gamma: 0.5, green: 1.0, alpha: 0.35 },
+  };
+  const NIGHT_ORDER = ['off', 'bright', 'green'];
+
+  const night = {
+    canvas: $('#nightCanvas'), gl: null, u: {}, running: false, first: true, capture: null, ok: null,
+    setup() {
+      if (this.ok !== null) return this.ok;
+      const gl = this.canvas.getContext('webgl', { preserveDrawingBuffer: true, alpha: false, antialias: false });
+      if (!gl) return (this.ok = false);
+      const sh = (type, src) => { const o = gl.createShader(type); gl.shaderSource(o, src); gl.compileShader(o); return o; };
+      const prog = gl.createProgram();
+      gl.attachShader(prog, sh(gl.VERTEX_SHADER,
+        'attribute vec2 p; varying vec2 uv; void main(){ uv = vec2((p.x + 1.0) * 0.5, (1.0 - p.y) * 0.5); gl_Position = vec4(p, 0.0, 1.0); }'));
+      gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, `
+        precision mediump float;
+        varying vec2 uv;
+        uniform sampler2D t;
+        uniform float gain, gamma, green, alpha;
+        void main() {
+          vec3 c = texture2D(t, uv).rgb;
+          c = clamp(pow(c, vec3(gamma)) * gain, 0.0, 1.0);
+          float l = dot(c, vec3(0.299, 0.587, 0.114));
+          vec3 g = vec3(l * 0.32, min(1.0, l * 1.08), l * 0.38);
+          c = mix(c, g, green);
+          vec2 d = uv - 0.5;
+          c *= mix(1.0, 1.0 - dot(d, d) * 1.1, green);
+          gl_FragColor = vec4(c, alpha);
+        }`));
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return (this.ok = false);
+      gl.useProgram(prog);
+      const buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+      const loc = gl.getAttribLocation(prog, 'p');
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      for (const [k, v] of [[gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE], [gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+      for (const n of ['gain', 'gamma', 'green', 'alpha']) this.u[n] = gl.getUniformLocation(prog, n);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      this.gl = gl;
+      return (this.ok = true);
+    },
+    frame() {
+      if (!night.running) return;
+      const v = $('#preview'), gl = night.gl, m = NIGHT_MODES[settings.night];
+      if (m.gain && v.readyState >= 2 && v.videoWidth) {
+        const s = Math.min(1, 1280 / Math.max(v.videoWidth, v.videoHeight));
+        const w = Math.round(v.videoWidth * s), h = Math.round(v.videoHeight * s);
+        if (night.canvas.width !== w || night.canvas.height !== h) {
+          night.canvas.width = w; night.canvas.height = h; gl.viewport(0, 0, w, h); night.first = true;
+        }
+        try {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, v);
+          gl.uniform1f(night.u.gain, m.gain);
+          gl.uniform1f(night.u.gamma, m.gamma);
+          gl.uniform1f(night.u.green, m.green);
+          gl.uniform1f(night.u.alpha, night.first ? 1 : m.alpha);
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+          night.first = false;
+        } catch {}
+      }
+      requestAnimationFrame(night.frame);
+    },
+    apply() {
+      const on = settings.night !== 'off' && this.setup();
+      this.canvas.hidden = !on;
+      this.canvas.classList.toggle('mirror', state.camera === 'front');
+      this.first = true;
+      if (on && !this.running) { this.running = true; requestAnimationFrame(this.frame); }
+      if (!on) this.running = false;
+      return on;
+    },
+  };
+
+  // 撮影に使う映像：暗視中は加工後の映像＋マイク音声
+  function recordingStream() {
+    if (settings.night === 'off' || !night.running) return state.stream;
+    if (!night.capture) night.capture = night.canvas.captureStream(30);
+    return new MediaStream([...night.capture.getVideoTracks(), ...state.stream.getAudioTracks()]);
+  }
+
+  function cycleNight() {
+    if (state.recording) { toast('撮影中は暗視を切り替えられません'); return; }
+    settings.night = NIGHT_ORDER[(NIGHT_ORDER.indexOf(settings.night) + 1) % NIGHT_ORDER.length];
+    if (!night.apply() && settings.night !== 'off') {
+      settings.night = 'off';
+      toast('この端末では暗視モードを使えません');
+    }
+    saveSettings();
+    renderCamera();
+  }
+
+  // ---------- ライト ----------
+  const videoTrack = () => state.stream?.getVideoTracks()[0];
+  function torchSupported() {
+    try { return !!videoTrack()?.getCapabilities?.().torch; } catch { return false; }
+  }
+  async function toggleTorch() {
+    const want = !state.torch;
+    try {
+      await videoTrack().applyConstraints({ advanced: [{ torch: want }] });
+      state.torch = want;
+    } catch { toast('ライトをつけられませんでした'); }
+    renderCamera();
+  }
+
   // ---------- カメラ ----------
   async function openCamera() {
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -357,6 +493,8 @@ button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
     const v = $('#preview');
     v.srcObject = stream;
     v.classList.toggle('mirror', state.camera === 'front');
+    state.torch = false;
+    night.apply();
     await v.play().catch(() => {});
     renderCamera();
   }
@@ -394,7 +532,7 @@ button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
     if (!window.MediaRecorder) { toast('このブラウザでは撮影できません。Safari を最新にしてください。', 4000); return; }
     const mime = pickMime();
     let rec;
-    try { rec = new MediaRecorder(state.stream, mime ? { mimeType: mime, videoBitsPerSecond: 8_000_000 } : undefined); }
+    try { rec = new MediaRecorder(recordingStream(), mime ? { mimeType: mime, videoBitsPerSecond: 8_000_000 } : undefined); }
     catch (e) { toast('撮影を始められませんでした', 3000); return; }
     const chunks = [];
     const camera = state.camera;
@@ -525,6 +663,14 @@ button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
     $('#recBtn').setAttribute('aria-label', state.recording ? '撮影を停止' : '撮影を開始');
     $('#switchBtn').disabled = state.recording;
     $('#timer').hidden = !state.recording;
+    const nb = $('#nightBtn');
+    nb.querySelector('span').textContent = NIGHT_MODES[settings.night].label;
+    nb.classList.toggle('active', settings.night !== 'off');
+    nb.disabled = state.recording;
+    const tb = $('#torchBtn');
+    tb.hidden = !torchSupported();
+    tb.classList.toggle('active', !!state.torch);
+    tb.querySelector('span').textContent = state.torch ? 'ライト：オン' : 'ライト';
     $('#darkBtn span').textContent = settings.recordOnDark && !state.recording ? '暗転して撮影' : '画面を暗転';
     renderTimers();
   }
@@ -647,6 +793,8 @@ button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
   $('#recBtn').addEventListener('click', toggleRecording);
   $('#darkBtn').addEventListener('click', enterDark);
   $('#switchBtn').addEventListener('click', switchCamera);
+  $('#nightBtn').addEventListener('click', cycleNight);
+  $('#torchBtn').addEventListener('click', toggleTorch);
   $('#libraryBtn').addEventListener('click', () => { $('#library').hidden = false; renderList(); });
   $('#libraryClose').addEventListener('click', () => { $('#library').hidden = true; });
   document.querySelectorAll('.segment button').forEach((b) => b.addEventListener('click', () => { state.filter = b.dataset.filter; renderList(); }));
