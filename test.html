@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>同時撮影テスト</title>
+<style>
+:root { color-scheme: dark; --bg: #000; --fg: #f2f0ea; --muted: #9a98a0; --surface: #17171a; --ok: #34c759; --ng: #ff6b61; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.6 -apple-system, "Hiragino Sans", sans-serif;
+  padding: calc(env(safe-area-inset-top) + 16px) 16px calc(env(safe-area-inset-bottom) + 24px); }
+h1 { font-size: 22px; margin: 0 0 8px; }
+p { margin: 0 0 12px; color: var(--muted); }
+button { font: inherit; font-weight: 700; background: var(--fg); color: #000; border: 0; border-radius: 12px; padding: 14px; width: 100%; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 16px 0; }
+.cell { background: var(--surface); border-radius: 10px; overflow: hidden; }
+.cell video { width: 100%; aspect-ratio: 3 / 4; object-fit: cover; display: block; background: #222; }
+.cell div { padding: 6px 8px; font-size: 13px; }
+#result { background: var(--surface); border-radius: 12px; padding: 14px; white-space: pre-wrap; font-size: 14px; }
+.ok { color: var(--ok); font-weight: 700; }
+.ng { color: var(--ng); font-weight: 700; }
+</style>
+</head>
+<body>
+<h1>前と後ろのカメラ 同時テスト</h1>
+<p>ボタンを押して、カメラを「許可」してください。5秒ほどで結果が出ます。</p>
+<button id="go">テストを始める</button>
+<div class="grid">
+  <div class="cell"><video id="vBack" playsinline muted autoplay></video><div id="sBack">後ろのカメラ：—</div></div>
+  <div class="cell"><video id="vFront" playsinline muted autoplay></video><div id="sFront">前のカメラ：—</div></div>
+</div>
+<div id="result">結果はここに表示されます。</div>
+<script>
+const $ = (s) => document.querySelector(s);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 1秒間に映像が進んでいるか（止まっていないか）を調べる
+async function isMoving(video) {
+  const t0 = video.currentTime;
+  let frames = 0;
+  if (video.requestVideoFrameCallback) {
+    const count = () => { frames++; video.requestVideoFrameCallback(count); };
+    video.requestVideoFrameCallback(count);
+  }
+  await sleep(1200);
+  return frames > 2 || video.currentTime - t0 > 0.5;
+}
+
+function trackState(stream) {
+  const t = stream?.getVideoTracks()[0];
+  if (!t) return 'なし';
+  return t.readyState === 'ended' ? '停止' : t.muted ? '一時停止中' : '動作中';
+}
+
+$('#go').addEventListener('click', async () => {
+  $('#go').disabled = true;
+  $('#go').textContent = 'テスト中…';
+  const log = [];
+  let back, front;
+  try {
+    back = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: 'environment' } } });
+    $('#vBack').srcObject = back;
+    await $('#vBack').play().catch(() => {});
+    log.push('後ろのカメラ：起動できた');
+  } catch (e) { log.push('後ろのカメラ：起動できない（' + e.name + '）'); }
+  try {
+    front = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: 'user' } } });
+    $('#vFront').srcObject = front;
+    await $('#vFront').play().catch(() => {});
+    log.push('前のカメラ：起動できた');
+  } catch (e) { log.push('前のカメラ：起動できない（' + e.name + '）'); }
+
+  await sleep(1500);
+  const [mBack, mFront] = await Promise.all([
+    back ? isMoving($('#vBack')) : false,
+    front ? isMoving($('#vFront')) : false,
+  ]);
+  $('#sBack').textContent = '後ろ：' + trackState(back) + (mBack ? '・映像OK' : '・映像停止');
+  $('#sFront').textContent = '前：' + trackState(front) + (mFront ? '・映像OK' : '・映像停止');
+
+  const both = mBack && mFront && trackState(back) === '動作中' && trackState(front) === '動作中';
+  $('#result').innerHTML = (both
+    ? '<span class="ok">◎ 同時に動きました！</span>\nこのiPhoneでは、Webアプリのまま同時撮影できる可能性があります。'
+    : '<span class="ng">× 同時には動きませんでした</span>\n片方を起動すると、もう片方が止まるようです。')
+    + '\n\n' + log.join('\n')
+    + '\n\n' + navigator.userAgent;
+  $('#go').disabled = false;
+  $('#go').textContent = 'もう一度テストする';
+});
+</script>
+</body>
+</html>
